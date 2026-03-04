@@ -247,7 +247,7 @@ function getAgentIcon(agentId: string): string {
     accessibility: "◎",
     designflaws: "◇",
   };
-  return icons[agentId] ?? "○";
+  return icons[agentId] !== undefined ? icons[agentId] : "○";
 }
 
 function getAgentName(agentId: string): string {
@@ -257,7 +257,7 @@ function getAgentName(agentId: string): string {
     accessibility: "Accessibility (WCAG)",
     designflaws: "Design Flaws",
   };
-  return names[agentId] ?? agentId;
+  return names[agentId] !== undefined ? names[agentId] : agentId;
 }
 
 function buildExecutiveSummary(

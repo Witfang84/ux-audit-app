@@ -159,7 +159,7 @@ function getAgentIcon(agentId) {
     accessibility: "◎",
     designflaws: "◇"
   };
-  return icons[agentId] ?? "○";
+  return icons[agentId] !== undefined ? icons[agentId] : "○";
 }
 function getAgentName(agentId) {
   const names = {
@@ -168,7 +168,7 @@ function getAgentName(agentId) {
     accessibility: "Accessibility (WCAG)",
     designflaws: "Design Flaws"
   };
-  return names[agentId] ?? agentId;
+  return names[agentId] !== undefined ? names[agentId] : agentId;
 }
 function buildExecutiveSummary(parent, synthesis, width, startY) {
   const PAD = 32;
