@@ -5,7 +5,7 @@ figma.showUI(__html__, { width: 480, height: 640 });
 
 // Send stored API key to UI on startup
 figma.clientStorage.getAsync("ux-audit-api-key").then((apiKey: string | undefined) => {
-  figma.ui.postMessage({ type: "api-key", apiKey: apiKey ?? "" });
+  figma.ui.postMessage({ type: "api-key", apiKey: apiKey !== undefined ? apiKey : "" });
 });
 
 figma.ui.onmessage = async (msg: PluginMessage) => {
