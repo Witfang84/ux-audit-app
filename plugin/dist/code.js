@@ -345,7 +345,14 @@ function buildFooter(parent, width, startY) {
 
 // src/code.ts
 figma.showUI(__html__, { width: 480, height: 640 });
+figma.clientStorage.getAsync("ux-audit-api-key").then((apiKey) => {
+  figma.ui.postMessage({ type: "api-key", apiKey: apiKey ?? "" });
+});
 figma.ui.onmessage = async (msg) => {
+  if (msg.type === "save-api-key") {
+    await figma.clientStorage.setAsync("ux-audit-api-key", msg.apiKey);
+    return;
+  }
   if (msg.type === "request-export") {
     const selection = figma.currentPage.selection[0];
     if (!selection) {

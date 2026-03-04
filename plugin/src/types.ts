@@ -56,6 +56,9 @@ export interface AuditContext {
 export type PluginMessage =
   | { type: "export-ready"; imageData: Uint8Array; frameName: string; frameWidth: number; frameHeight: number }
   | { type: "no-selection" }
+  | { type: "request-export" }
   | { type: "build-report"; synthesis: SynthesisResult; agentResults: AgentResult[]; frameName: string; context: AuditContext }
   | { type: "report-built" }
-  | { type: "report-error"; message: string };
+  | { type: "report-error"; message: string }
+  | { type: "save-api-key"; apiKey: string }
+  | { type: "api-key"; apiKey: string };

@@ -142,7 +142,7 @@ type BuildStatus = "idle" | "building" | "done" | "error";
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>("key");
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem("ux-audit-api-key") ?? "");
+  const [apiKey, setApiKey] = useState("");
 
   const [frameName, setFrameName] = useState("");
   const [imageBase64, setImageBase64] = useState("");
@@ -166,6 +166,10 @@ export default function App() {
       const msg = event.data?.pluginMessage;
       if (!msg) return;
 
+      if (msg.type === "api-key") {
+        setApiKey(msg.apiKey);
+        if (msg.apiKey) setPhase("select");
+      }
       if (msg.type === "export-ready") {
         const base64 = uint8ToBase64(new Uint8Array(msg.imageData));
         setImageBase64(base64);
@@ -191,7 +195,7 @@ export default function App() {
 
   const saveApiKey = () => {
     if (!apiKey.trim()) return;
-    localStorage.setItem("ux-audit-api-key", apiKey.trim());
+    parent.postMessage({ pluginMessage: { type: "save-api-key", apiKey: apiKey.trim() } }, "*");
     setPhase("select");
   };
 
