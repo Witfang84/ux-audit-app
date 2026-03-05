@@ -1,0 +1,9 @@
+{
+  "name": "ux-audit-monorepo",
+  "private": true,
+  "workspaces": ["web", "plugin"],
+  "scripts": {
+    "web": "npm run dev --workspace=web",
+    "plugin": "npm run dev --workspace=plugin"
+  }
+}
