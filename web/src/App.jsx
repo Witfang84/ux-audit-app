@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 
 const AGENTS = [
   {
@@ -187,12 +187,14 @@ Return ONLY valid JSON, no markdown:
   "low_count": <number>
 }`;
 
-const API_HEADERS = {
-  "Content-Type": "application/json",
-  "anthropic-version": "2023-06-01",
-  "anthropic-dangerous-direct-browser-access": "true",
-  "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY || ""
-};
+function getApiHeaders(apiKey) {
+  return {
+    "Content-Type": "application/json",
+    "anthropic-version": "2023-06-01",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "x-api-key": apiKey
+  };
+}
 
 function parseJSON(raw) {
   // Strip markdown fences, trim whitespace
@@ -218,7 +220,7 @@ function parseJSON(raw) {
   }
 }
 
-async function callClaude(systemPrompt, imageBase64, mediaType, textInput) {
+async function callClaude(apiKey, systemPrompt, imageBase64, mediaType, textInput) {
   const userContent = [];
 
   if (imageBase64) {
@@ -235,7 +237,7 @@ async function callClaude(systemPrompt, imageBase64, mediaType, textInput) {
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: API_HEADERS,
+    headers: getApiHeaders(apiKey),
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
       max_tokens: 2000,
@@ -255,10 +257,10 @@ async function callClaude(systemPrompt, imageBase64, mediaType, textInput) {
   return parseJSON(text);
 }
 
-async function callClaudeText(systemPrompt, text, maxTokens = 2000) {
+async function callClaudeText(apiKey, systemPrompt, text, maxTokens = 2000) {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: API_HEADERS,
+    headers: getApiHeaders(apiKey),
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
       max_tokens: maxTokens,
@@ -294,6 +296,7 @@ const gradeColor = (grade) => {
 };
 
 export default function UXAuditApp() {
+  const [apiKey, setApiKey] = useState("");
   const [inputType, setInputType] = useState("upload");
   const [urlInput, setUrlInput] = useState("");
   const [uploadedImage, setUploadedImage] = useState(null);
@@ -315,6 +318,12 @@ export default function UXAuditApp() {
     additionalNotes: ""
   });
   const [contextExpanded, setContextExpanded] = useState(false);
+
+  // Load API key from localStorage on mount
+  useEffect(() => {
+    const savedApiKey = localStorage.getItem("ux-audit-api-key") || "";
+    setApiKey(savedApiKey);
+  }, []);
 
   const handleFileUpload = useCallback((e) => {
     const file = e.target.files[0];
@@ -362,6 +371,11 @@ export default function UXAuditApp() {
   };
 
   const runAudit = async () => {
+    if (!apiKey.trim()) {
+      alert("Please enter your Anthropic API key first.");
+      return;
+    }
+
     setPhase("running");
     setAgentStatuses({});
     setAgentResults({});
@@ -384,9 +398,9 @@ export default function UXAuditApp() {
       try {
         let result;
         if (imageBase64) {
-          result = await callClaude(agent.persona + buildContextBlock(), imageBase64, mediaType, null);
+          result = await callClaude(apiKey, agent.persona + buildContextBlock(), imageBase64, mediaType, null);
         } else {
-          result = await callClaudeText(agent.persona + buildContextBlock(), contextText);
+          result = await callClaudeText(apiKey, agent.persona + buildContextBlock(), contextText);
         }
         setAgentResults(prev => ({ ...prev, [agent.id]: result }));
         setAgentStatuses(prev => ({ ...prev, [agent.id]: "done" }));
@@ -416,6 +430,7 @@ export default function UXAuditApp() {
     setAgentStatuses(prev => ({ ...prev, synthesis: "running" }));
     try {
       const synthResult = await callClaudeText(
+        apiKey,
         "You are Synthesis Oracle, a principal UX strategist. Return ONLY valid JSON, no markdown, no text outside JSON.",
         SYNTHESIS_PROMPT(results),
         3500
@@ -464,7 +479,7 @@ export default function UXAuditApp() {
     );
   };
 
-  const canRun = ((inputType === "upload" && imageBase64) || (inputType !== "upload" && urlInput.trim())) && selectedAgents.length > 0;
+  const canRun = apiKey.trim() && ((inputType === "upload" && imageBase64) || (inputType !== "upload" && urlInput.trim())) && selectedAgents.length > 0;
 
   return (
     <div style={{
@@ -507,6 +522,55 @@ export default function UXAuditApp() {
       {/* INPUT PHASE */}
       {phase === "input" && (
         <div className="fade-up" style={{ maxWidth: 680, margin: "0 auto", padding: "60px 24px" }}>
+          {/* API Key Input */}
+          {!apiKey.trim() && (
+            <div style={{ background: "#1A1A1A", border: "1px solid #333", borderRadius: 4, padding: 24, marginBottom: 48 }}>
+              <label style={{ display: "block", fontSize: 11, letterSpacing: "1.5px", color: "#888", marginBottom: 8, fontWeight: 500 }}>
+                ANTHROPIC API KEY
+              </label>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="sk-ant-..."
+                style={{
+                  width: "100%", padding: "10px 12px", background: "#0F0F0F", border: "1px solid #2A2A2A",
+                  borderRadius: 4, color: "#E8E0D0", fontSize: 13, fontFamily: "'DM Mono', monospace",
+                  outline: "none", marginBottom: 12, boxSizing: "border-box"
+                }}
+              />
+              <button
+                onClick={() => {
+                  if (apiKey.trim()) {
+                    localStorage.setItem("ux-audit-api-key", apiKey.trim());
+                  }
+                }}
+                style={{
+                  width: "100%", padding: "10px 12px", background: "#E8E0D0", color: "#0F0F0F",
+                  border: "none", borderRadius: 4, fontSize: 11, fontWeight: 500, letterSpacing: "1px",
+                  cursor: "pointer", fontFamily: "inherit"
+                }}>
+                SAVE API KEY
+              </button>
+              <p style={{ fontSize: 12, color: "#666", marginTop: 12, lineHeight: 1.5 }}>
+                Get your key from <a href="https://console.anthropic.com/account/keys" target="_blank" rel="noopener noreferrer" style={{ color: "#AAA", textDecoration: "underline" }}>console.anthropic.com</a>. Keys are stored locally (not sent to any server).
+              </p>
+            </div>
+          )}
+
+          {apiKey.trim() && (
+            <div style={{ textAlign: "right", marginBottom: 24 }}>
+              <button
+                onClick={() => { setApiKey(""); localStorage.removeItem("ux-audit-api-key"); }}
+                style={{
+                  background: "none", border: "1px solid #333", color: "#888", padding: "6px 12px",
+                  cursor: "pointer", fontSize: 11, letterSpacing: "1px", fontFamily: "inherit"
+                }}>
+                Change API Key
+              </button>
+            </div>
+          )}
+
           <div style={{ marginBottom: 48 }}>
             <h1 style={{ fontFamily: "'Syne', sans-serif", fontSize: 38, fontWeight: 800, lineHeight: 1.1, letterSpacing: "-1px", marginBottom: 12 }}>
               Drop your design.<br />
