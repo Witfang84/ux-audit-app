@@ -140,9 +140,11 @@ type BuildStatus = "idle" | "building" | "done" | "error";
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 
+const DEFAULT_API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY || "";
+
 export default function App() {
-  const [phase, setPhase] = useState<Phase>("key");
-  const [apiKey, setApiKey] = useState("");
+  const [phase, setPhase] = useState<Phase>(DEFAULT_API_KEY ? "select" : "key");
+  const [apiKey, setApiKey] = useState(DEFAULT_API_KEY);
 
   const [frameName, setFrameName] = useState("");
   const [imageBase64, setImageBase64] = useState("");
@@ -197,6 +199,10 @@ export default function App() {
     if (!apiKey.trim()) return;
     parent.postMessage({ pluginMessage: { type: "save-api-key", apiKey: apiKey.trim() } }, "*");
     setPhase("select");
+  };
+
+  const changeApiKey = () => {
+    setPhase("key");
   };
 
   const requestExport = () => {
@@ -294,6 +300,7 @@ export default function App() {
       selectedAgents={selectedAgents} toggleAgent={toggleAgent}
       setSelectedAgents={setSelectedAgents}
       onExport={requestExport} onRun={runAudit} error={error}
+      onChangeApiKey={changeApiKey}
     />
   );
   if (phase === "running") return <RunningView agentStatuses={agentStatuses} />;
@@ -342,13 +349,13 @@ function ApiKeyView({ apiKey, setApiKey, onSave }: {
 // ─── SelectView ───────────────────────────────────────────────────────────────
 
 function SelectView({ frameName, thumbUrl, context, setContext, contextExpanded, setContextExpanded,
-  selectedAgents, toggleAgent, setSelectedAgents, onExport, onRun, error }: {
+  selectedAgents, toggleAgent, setSelectedAgents, onExport, onRun, error, onChangeApiKey }: {
   frameName: string; thumbUrl: string;
   context: AuditContext; setContext: React.Dispatch<React.SetStateAction<AuditContext>>;
   contextExpanded: boolean; setContextExpanded: React.Dispatch<React.SetStateAction<boolean>>;
   selectedAgents: string[]; toggleAgent: (id: string) => void;
   setSelectedAgents: React.Dispatch<React.SetStateAction<string[]>>;
-  onExport: () => void; onRun: () => void; error: string;
+  onExport: () => void; onRun: () => void; error: string; onChangeApiKey: () => void;
 }) {
   const filledCount = Object.values(context).filter(Boolean).length;
   const canRun = !!thumbUrl && selectedAgents.length > 0;
@@ -361,10 +368,16 @@ function SelectView({ frameName, thumbUrl, context, setContext, contextExpanded,
           <div style={{ fontSize: 10, letterSpacing: "2px", color: "#888" }}>UX AUDIT</div>
           <div style={{ fontSize: 16, fontWeight: "bold" }}>Figma Plugin</div>
         </div>
-        <button onClick={onExport}
-          style={{ ...S.btnOutline, width: "auto", padding: "8px 14px", fontSize: 10 }}>
-          {frameName ? "↺ RESELECT" : "EXPORT FRAME"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onChangeApiKey}
+            style={{ ...S.btnOutline, width: "auto", padding: "8px 14px", fontSize: 10 }}>
+            API KEY
+          </button>
+          <button onClick={onExport}
+            style={{ ...S.btnOutline, width: "auto", padding: "8px 14px", fontSize: 10 }}>
+            {frameName ? "↺ RESELECT" : "EXPORT FRAME"}
+          </button>
+        </div>
       </div>
 
       {error && (

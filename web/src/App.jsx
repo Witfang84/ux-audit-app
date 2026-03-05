@@ -190,7 +190,8 @@ Return ONLY valid JSON, no markdown:
 const API_HEADERS = {
   "Content-Type": "application/json",
   "anthropic-version": "2023-06-01",
-  "anthropic-dangerous-direct-browser-access": "true"
+  "anthropic-dangerous-direct-browser-access": "true",
+  "x-api-key": import.meta.env.VITE_ANTHROPIC_API_KEY || ""
 };
 
 function parseJSON(raw) {
