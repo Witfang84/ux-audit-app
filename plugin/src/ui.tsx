@@ -1,13 +1,6 @@
 import { useState, useEffect } from "react";
-import { AGENTS, buildContextBlock, SYNTHESIS_PROMPT } from "./agents";
+import { AGENTS } from "./agents";
 import type { AgentResult, SynthesisResult, AuditContext } from "./types";
-
-const MODEL = "claude-sonnet-4-20250514";
-const API_HEADERS = {
-  "Content-Type": "application/json",
-  "anthropic-version": "2023-06-01",
-  "anthropic-dangerous-direct-browser-access": "true",
-};
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -18,64 +11,6 @@ function uint8ToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return btoa(binary);
-}
-
-function parseJSON(text: string): unknown {
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("No JSON found in response");
-  return JSON.parse(match[0]);
-}
-
-async function callClaude(
-  apiKey: string,
-  systemPrompt: string,
-  imageBase64: string
-): Promise<AgentResult> {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { ...API_HEADERS, "x-api-key": apiKey },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 2000,
-      system: systemPrompt,
-      messages: [{
-        role: "user",
-        content: [
-          { type: "image", source: { type: "base64", media_type: "image/png", data: imageBase64 } },
-          { type: "text", text: "Analyze this UI design thoroughly according to your expertise. Be specific and actionable. Return max 5 findings to keep response concise." },
-        ],
-      }],
-    }),
-  });
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({})) as { error?: { message?: string } };
-    throw new Error(err?.error?.message ?? `HTTP ${response.status}`);
-  }
-  const data = await response.json() as { content: Array<{ text?: string }> };
-  const text = data.content.map((i) => i.text ?? "").join("");
-  return parseJSON(text) as AgentResult;
-}
-
-async function callClaudeSynthesis(
-  apiKey: string,
-  results: AgentResult[]
-): Promise<SynthesisResult> {
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { ...API_HEADERS, "x-api-key": apiKey },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 3500,
-      messages: [{ role: "user", content: SYNTHESIS_PROMPT(results) }],
-    }),
-  });
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({})) as { error?: { message?: string } };
-    throw new Error(err?.error?.message ?? `HTTP ${response.status}`);
-  }
-  const data = await response.json() as { content: Array<{ text?: string }> };
-  const text = data.content.map((i) => i.text ?? "").join("");
-  return parseJSON(text) as SynthesisResult;
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -188,6 +123,27 @@ export default function App() {
         setBuildStatus("error");
         setError(msg.message);
       }
+      if (msg.type === "audit-started") {
+        const initialStatuses: Record<string, string> = {};
+        AGENTS.forEach((a) => { initialStatuses[a.id] = "pending"; });
+        setAgentStatuses(initialStatuses);
+      }
+      if (msg.type === "agent-result") {
+        setAgentResults((prev) => ({ ...prev, [msg.agentId]: msg.result }));
+        setAgentStatuses((prev) => ({
+          ...prev,
+          [msg.agentId]: msg.result.error ? "error" : "done",
+        }));
+      }
+      if (msg.type === "synthesis-result") {
+        setSynthesis(msg.result);
+        setAgentStatuses((prev) => ({ ...prev, synthesis: "done" }));
+        setPhase("results");
+      }
+      if (msg.type === "audit-error") {
+        setError(msg.message);
+        setPhase("select");
+      }
     };
     window.addEventListener("message", handler);
     return () => window.removeEventListener("message", handler);
@@ -197,6 +153,10 @@ export default function App() {
     if (!apiKey.trim()) return;
     parent.postMessage({ pluginMessage: { type: "save-api-key", apiKey: apiKey.trim() } }, "*");
     setPhase("select");
+  };
+
+  const changeApiKey = () => {
+    setPhase("key");
   };
 
   const requestExport = () => {
@@ -209,6 +169,7 @@ export default function App() {
   };
 
   const runAudit = async () => {
+    if (!apiKey.trim()) { setError("Please enter your API key first."); return; }
     if (!imageBase64) { setError("Export a frame first."); return; }
     if (!selectedAgents.length) { setError("Select at least one agent."); return; }
 
@@ -218,57 +179,16 @@ export default function App() {
     setSynthesis(null);
     setError("");
 
-    const initialStatuses: Record<string, string> = {};
-    AGENTS.forEach((a) => { initialStatuses[a.id] = "pending"; });
-    setAgentStatuses(initialStatuses);
-
-    const activeAgents = AGENTS.filter((a) => selectedAgents.includes(a.id));
-    const results: AgentResult[] = [];
-
-    const runAgent = async (agent: typeof AGENTS[0]): Promise<AgentResult> => {
-      setAgentStatuses((prev) => ({ ...prev, [agent.id]: "running" }));
-      try {
-        const result = await callClaude(apiKey, agent.persona + buildContextBlock(context), imageBase64);
-        setAgentResults((prev) => ({ ...prev, [agent.id]: result }));
-        setAgentStatuses((prev) => ({ ...prev, [agent.id]: "done" }));
-        return result;
-      } catch (err) {
-        const errResult: AgentResult = {
-          agent: agent.id, persona: agent.name, score: 0,
-          summary: `Failed: ${(err as Error).message}`, findings: [],
-          error: (err as Error).message,
-        };
-        setAgentResults((prev) => ({ ...prev, [agent.id]: errResult }));
-        setAgentStatuses((prev) => ({ ...prev, [agent.id]: "error" }));
-        return errResult;
-      }
-    };
-
-    // Run in batches of 2 (API rate limit)
-    for (let i = 0; i < activeAgents.length; i += 2) {
-      const batch = activeAgents.slice(i, i + 2);
-      const batchResults = await Promise.all(batch.map(runAgent));
-      results.push(...batchResults);
-      if (i + 2 < activeAgents.length) await new Promise((r) => setTimeout(r, 1000));
-    }
-
-    // Synthesis
-    setAgentStatuses((prev) => ({ ...prev, synthesis: "running" }));
-    try {
-      const synthResult = await callClaudeSynthesis(apiKey, results);
-      setSynthesis(synthResult);
-      setAgentStatuses((prev) => ({ ...prev, synthesis: "done" }));
-    } catch (err) {
-      setAgentStatuses((prev) => ({ ...prev, synthesis: "error" }));
-      setSynthesis({
-        overall_score: 0, grade: "—",
-        executive_summary: "Synthesis failed. See individual agent results.",
-        top_priorities: [], merged_findings: [], strengths: [],
-        critical_count: 0, high_count: 0, medium_count: 0, low_count: 0,
-      });
-    }
-
-    setPhase("results");
+    // Send audit request to code.ts (main plugin thread) which will handle API calls
+    parent.postMessage({
+      pluginMessage: {
+        type: "run-audit",
+        apiKey,
+        agentIds: selectedAgents,
+        imageBase64,
+        context,
+      },
+    }, "*");
   };
 
   const buildReport = () => {
@@ -294,6 +214,7 @@ export default function App() {
       selectedAgents={selectedAgents} toggleAgent={toggleAgent}
       setSelectedAgents={setSelectedAgents}
       onExport={requestExport} onRun={runAudit} error={error}
+      onChangeApiKey={changeApiKey}
     />
   );
   if (phase === "running") return <RunningView agentStatuses={agentStatuses} />;
@@ -342,13 +263,13 @@ function ApiKeyView({ apiKey, setApiKey, onSave }: {
 // ─── SelectView ───────────────────────────────────────────────────────────────
 
 function SelectView({ frameName, thumbUrl, context, setContext, contextExpanded, setContextExpanded,
-  selectedAgents, toggleAgent, setSelectedAgents, onExport, onRun, error }: {
+  selectedAgents, toggleAgent, setSelectedAgents, onExport, onRun, error, onChangeApiKey }: {
   frameName: string; thumbUrl: string;
   context: AuditContext; setContext: React.Dispatch<React.SetStateAction<AuditContext>>;
   contextExpanded: boolean; setContextExpanded: React.Dispatch<React.SetStateAction<boolean>>;
   selectedAgents: string[]; toggleAgent: (id: string) => void;
   setSelectedAgents: React.Dispatch<React.SetStateAction<string[]>>;
-  onExport: () => void; onRun: () => void; error: string;
+  onExport: () => void; onRun: () => void; error: string; onChangeApiKey: () => void;
 }) {
   const filledCount = Object.values(context).filter(Boolean).length;
   const canRun = !!thumbUrl && selectedAgents.length > 0;
@@ -361,10 +282,16 @@ function SelectView({ frameName, thumbUrl, context, setContext, contextExpanded,
           <div style={{ fontSize: 10, letterSpacing: "2px", color: "#888" }}>UX AUDIT</div>
           <div style={{ fontSize: 16, fontWeight: "bold" }}>Figma Plugin</div>
         </div>
-        <button onClick={onExport}
-          style={{ ...S.btnOutline, width: "auto", padding: "8px 14px", fontSize: 10 }}>
-          {frameName ? "↺ RESELECT" : "EXPORT FRAME"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onChangeApiKey}
+            style={{ ...S.btnOutline, width: "auto", padding: "8px 14px", fontSize: 10 }}>
+            API KEY
+          </button>
+          <button onClick={onExport}
+            style={{ ...S.btnOutline, width: "auto", padding: "8px 14px", fontSize: 10 }}>
+            {frameName ? "↺ RESELECT" : "EXPORT FRAME"}
+          </button>
+        </div>
       </div>
 
       {error && (

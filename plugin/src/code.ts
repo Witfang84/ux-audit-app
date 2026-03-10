@@ -1,5 +1,87 @@
 import { buildReportFrame } from "./report-builder";
-import type { PluginMessage } from "./types";
+import { AGENTS, SYNTHESIS_PROMPT } from "./agents";
+import type { PluginMessage, AgentResult, SynthesisResult, AuditContext } from "./types";
+
+const MODEL = "claude-sonnet-4-20250514";
+const API_HEADERS = {
+  "Content-Type": "application/json",
+  "anthropic-version": "2023-06-01",
+};
+
+function parseJSON(text: string): unknown {
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("No JSON found in response");
+  return JSON.parse(match[0]);
+}
+
+function buildContextBlock(context: AuditContext): string {
+  const lines = [];
+  if (context.productType) lines.push(`- Product type: ${context.productType}`);
+  if (context.targetAudience) lines.push(`- Target audience: ${context.targetAudience}`);
+  if (context.userGoal) lines.push(`- User's goal on this screen: ${context.userGoal}`);
+  if (context.projectStage) lines.push(`- Project stage: ${context.projectStage}`);
+  if (context.additionalNotes) lines.push(`- Additional context: ${context.additionalNotes}`);
+  if (!lines.length) return "";
+  return `\n\nDESIGN CONTEXT (take this into account during your analysis):\n${lines.join("\n")}\n`;
+}
+
+async function callClaude(
+  apiKey: string,
+  systemPrompt: string,
+  imageBase64: string
+): Promise<AgentResult> {
+  if (!apiKey.trim()) {
+    throw new Error("API key is empty");
+  }
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { ...API_HEADERS, "x-api-key": apiKey },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: 2000,
+      system: systemPrompt,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/png", data: imageBase64 } },
+          { type: "text", text: "Analyze this UI design thoroughly according to your expertise. Be specific and actionable. Return max 5 findings to keep response concise." },
+        ],
+      }],
+    }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({})) as { error?: { message?: string } };
+    throw new Error(err?.error?.message ?? `HTTP ${response.status}`);
+  }
+  const data = await response.json() as { content: Array<{ text?: string }> };
+  const text = data.content.map((i) => i.text ?? "").join("");
+  return parseJSON(text) as AgentResult;
+}
+
+async function callClaudeSynthesis(
+  apiKey: string,
+  results: AgentResult[]
+): Promise<SynthesisResult> {
+  if (!apiKey.trim()) {
+    throw new Error("API key is empty");
+  }
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { ...API_HEADERS, "x-api-key": apiKey },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: 3500,
+      messages: [{ role: "user", content: SYNTHESIS_PROMPT(results) }],
+    }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({})) as { error?: { message?: string } };
+    throw new Error(err?.error?.message ?? `HTTP ${response.status}`);
+  }
+  const data = await response.json() as { content: Array<{ text?: string }> };
+  const text = data.content.map((i) => i.text ?? "").join("");
+  return parseJSON(text) as SynthesisResult;
+}
 
 figma.showUI(__html__, { width: 480, height: 640 });
 
@@ -49,6 +131,62 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
       figma.ui.postMessage({
         type: "report-error",
         message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  // UI requests to run audit (API calls happen here in code.ts, not in UI)
+  if (msg.type === "run-audit") {
+    try {
+      figma.ui.postMessage({ type: "audit-started" });
+
+      const { apiKey, agentIds, imageBase64, context } = msg;
+      const results: AgentResult[] = [];
+
+      // Run agents in batches of 2
+      const activeAgents = AGENTS.filter((a) => agentIds.includes(a.id));
+      for (let i = 0; i < activeAgents.length; i += 2) {
+        const batch = activeAgents.slice(i, i + 2);
+        const batchPromises = batch.map(async (agent) => {
+          try {
+            const contextBlock = buildContextBlock(context);
+            const result = await callClaude(apiKey, agent.persona + contextBlock, imageBase64);
+            figma.ui.postMessage({ type: "agent-result", agentId: agent.id, result });
+            return result;
+          } catch (err) {
+            const errResult: AgentResult = {
+              agent: agent.id,
+              persona: agent.name,
+              score: 0,
+              summary: `Failed: ${(err as Error).message}`,
+              findings: [],
+              error: (err as Error).message,
+            };
+            figma.ui.postMessage({ type: "agent-result", agentId: agent.id, result: errResult });
+            return errResult;
+          }
+        });
+        const batchResults = await Promise.all(batchPromises);
+        results.push(...batchResults);
+        if (i + 2 < activeAgents.length) {
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      }
+
+      // Run synthesis
+      try {
+        const synthResult = await callClaudeSynthesis(apiKey, results);
+        figma.ui.postMessage({ type: "synthesis-result", result: synthResult });
+      } catch (err) {
+        figma.ui.postMessage({
+          type: "audit-error",
+          message: `Synthesis failed: ${(err as Error).message}`,
+        });
+      }
+    } catch (err) {
+      figma.ui.postMessage({
+        type: "audit-error",
+        message: (err as Error).message,
       });
     }
   }

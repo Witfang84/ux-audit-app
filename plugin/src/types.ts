@@ -61,4 +61,9 @@ export type PluginMessage =
   | { type: "report-built" }
   | { type: "report-error"; message: string }
   | { type: "save-api-key"; apiKey: string }
-  | { type: "api-key"; apiKey: string };
+  | { type: "api-key"; apiKey: string }
+  | { type: "run-audit"; apiKey: string; agentIds: string[]; imageBase64: string; context: AuditContext }
+  | { type: "audit-started" }
+  | { type: "agent-result"; agentId: string; result: AgentResult }
+  | { type: "synthesis-result"; result: SynthesisResult }
+  | { type: "audit-error"; message: string };
