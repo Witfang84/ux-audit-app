@@ -1,6 +1,6 @@
 import { buildReportFrame } from "./report-builder";
-import { AGENTS, SYNTHESIS_PROMPT } from "./agents";
-import type { PluginMessage, AgentResult, SynthesisResult, AuditContext } from "./types";
+import { AGENTS, SYNTHESIS_PROMPT, PLANNING_PROMPT, buildContextBlock } from "./agents";
+import type { PluginMessage, AgentResult, SynthesisResult, AuditContext, AuditPlan, AgentPlanInstructions } from "./types";
 
 const MODEL = "claude-sonnet-4-20250514";
 const API_HEADERS = {
@@ -83,6 +83,55 @@ async function callClaudeSynthesis(
   return parseJSON(text) as SynthesisResult;
 }
 
+async function callClaudePlanning(
+  apiKey: string,
+  imageBase64: string,
+  context: AuditContext
+): Promise<AuditPlan> {
+  if (!apiKey.trim()) {
+    throw new Error("API key is empty");
+  }
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { ...API_HEADERS, "x-api-key": apiKey },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: 2000,
+      system: PLANNING_PROMPT,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/png", data: imageBase64 } },
+          { 
+            type: "text", 
+            text: `Plan an audit for this design. Consider: ${context.productType || "General product"}, Target: ${context.targetAudience || "General users"}, Goal: ${context.userGoal || "General task"}, Stage: ${context.projectStage || "Not specified"}` 
+          },
+        ],
+      }],
+    }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({})) as { error?: { message?: string } };
+    throw new Error(err?.error?.message ?? `HTTP ${response.status}`);
+  }
+  const data = await response.json() as { content: Array<{ text?: string }> };
+  const text = data.content.map((i) => i.text ?? "").join("");
+  return parseJSON(text) as AuditPlan;
+}
+
+function buildAgentInstructions(plan: AuditPlan, agentId: string): string {
+  const instructions = plan.agent_instructions[agentId as keyof typeof plan.agent_instructions];
+  if (!instructions) return "";
+  
+  let block = `\n\nAUDIT PLAN — YOUR FOCUS FOR THIS SESSION:\n`;
+  block += `- Priority level: ${instructions.priority.toUpperCase()}\n`;
+  block += `- Key areas to focus on: ${instructions.focus_areas.join(", ")}\n`;
+  if (instructions.skip_notes) {
+    block += `- What to deprioritize: ${instructions.skip_notes}\n`;
+  }
+  return block;
+}
+
 figma.showUI(__html__, { width: 480, height: 640 });
 
 // Send stored API key to UI on startup
@@ -142,15 +191,33 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
 
       const { apiKey, agentIds, imageBase64, context } = msg;
       const results: AgentResult[] = [];
+      let plan: AuditPlan | null = null;
 
-      // Run agents in batches of 2
+      // Phase 1: Planning (fallback gracefully if fails)
+      try {
+        plan = await callClaudePlanning(apiKey, imageBase64, context);
+        figma.ui.postMessage({ type: "planning-result", plan });
+      } catch (planErr) {
+        console.error("Planning failed, continuing with default audit:", planErr);
+        figma.ui.postMessage({ type: "planning-result", plan: null });
+      }
+
+      // Phase 2: Run agents in batches of 2 (with plan instructions if available)
       const activeAgents = AGENTS.filter((a) => agentIds.includes(a.id));
       for (let i = 0; i < activeAgents.length; i += 2) {
         const batch = activeAgents.slice(i, i + 2);
         const batchPromises = batch.map(async (agent) => {
           try {
             const contextBlock = buildContextBlock(context);
-            const result = await callClaude(apiKey, agent.persona + contextBlock, imageBase64);
+            let systemPrompt = agent.persona + contextBlock;
+            
+            // Inject plan instructions if planning succeeded
+            if (plan) {
+              const planInstructions = buildAgentInstructions(plan, agent.id);
+              systemPrompt += planInstructions;
+            }
+            
+            const result = await callClaude(apiKey, systemPrompt, imageBase64);
             figma.ui.postMessage({ type: "agent-result", agentId: agent.id, result });
             return result;
           } catch (err) {
@@ -173,7 +240,7 @@ figma.ui.onmessage = async (msg: PluginMessage) => {
         }
       }
 
-      // Run synthesis
+      // Phase 3: Run synthesis
       try {
         const synthResult = await callClaudeSynthesis(apiKey, results);
         figma.ui.postMessage({ type: "synthesis-result", result: synthResult });

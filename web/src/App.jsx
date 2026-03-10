@@ -280,6 +280,115 @@ async function callClaudeText(apiKey, systemPrompt, text, maxTokens = 2000) {
   return parseJSON(raw);
 }
 
+async function callClaudePlanning(apiKey, imageBase64, context) {
+  const systemPrompt = `You are Audit Planner, a senior UX strategist. Before specialist agents analyze this design, you review the screen and context to create a focused, adaptive audit plan.
+
+The 4 specialist agents you are directing:
+- heuristics: Nielsen's 10 Heuristics, Shneiderman's 8 Golden Rules, Gestalt Principles, behavioral frameworks (Fogg, Hook Model), UX writing
+- darkpatterns: Manipulative patterns (fake urgency, confirmshaming, hidden costs, forced continuity, fake social proof, etc.), ethical design
+- accessibility: WCAG 2.1 AA/AAA — contrast ratios, touch targets, focus states, cognitive load, screen reader compatibility
+- designflaws: Information architecture, visual hierarchy, component consistency, interaction states, cognitive load, UX/UI layers
+
+Your task:
+1. Classify the screen based on what you see (view type, platform, domain, complexity)
+2. Define the audit strategy adapted to the project stage — lo-fi/mid-fi should deprioritize visual polish; hi-fi/prototype/live warrants full scrutiny
+3. Assign each agent a priority and focus areas based on what is most at risk for this specific screen and audience
+
+Adapt priorities by context:
+- Checkout/payment screens → darkpatterns HIGH, accessibility HIGH
+- Onboarding flows → heuristics HIGH (friction, cognitive load), designflaws HIGH (IA, progressive disclosure)
+- Dashboards → designflaws HIGH (hierarchy, information density), heuristics NORMAL
+- Forms → accessibility HIGH (labels, errors), heuristics HIGH (error recovery)
+- Lo-fi/Mid-fi stage → designflaws and heuristics HIGH; accessibility and darkpatterns NORMAL (visual details not final yet)
+- Elderly or vulnerable audiences → accessibility HIGH, darkpatterns HIGH
+- B2B/developer tools → heuristics HIGH (efficiency, consistency), designflaws HIGH (IA)
+
+Return ONLY valid JSON, no text before or after:
+{
+  "screen_classification": {
+    "view_type": "<checkout|onboarding|dashboard|form|landing page|settings|list/feed|modal|other>",
+    "platform": "<mobile|web desktop|responsive|tablet>",
+    "domain": "<e-commerce|SaaS B2B|fintech|healthcare|consumer app|other>",
+    "complexity": "<low|medium|high>"
+  },
+  "audit_strategy": {
+    "overall_approach": "<2-3 sentences: what this audit should focus on and why>",
+    "stage_constraints": "<what to deprioritize given the project stage, or 'Full audit — no constraints' if hi-fi/live>",
+    "critical_path": "<the primary action the user must complete on this screen>"
+  },
+  "agent_instructions": {
+    "heuristics": {
+      "priority": "<high|normal|low>",
+      "focus_areas": ["<area 1>", "<area 2>", "<area 3>"],
+      "skip_notes": "<optional: what is not relevant at this stage>"
+    },
+    "darkpatterns": {
+      "priority": "<high|normal|low>",
+      "focus_areas": ["<area 1>", "<area 2>", "<area 3>"],
+      "skip_notes": "<optional>"
+    },
+    "accessibility": {
+      "priority": "<high|normal|low>",
+      "focus_areas": ["<area 1>", "<area 2>", "<area 3>"],
+      "skip_notes": "<optional>"
+    },
+    "designflaws": {
+      "priority": "<high|normal|low>",
+      "focus_areas": ["<area 1>", "<area 2>", "<area 3>"],
+      "skip_notes": "<optional>"
+    }
+  },
+  "risk_areas": [
+    {
+      "area": "<risk area name>",
+      "reason": "<why this is a risk for this screen>",
+      "primary_agent": "<agent id>"
+    }
+  ]
+}`;
+
+  const userText = `Plan an audit for this design. Consider: ${context.productType || "General product"}, Target: ${context.targetAudience || "General users"}, Goal: ${context.userGoal || "General task"}, Stage: ${context.projectStage || "Not specified"}`;
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: getApiHeaders(apiKey),
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 2000,
+      system: systemPrompt,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/png", data: imageBase64 } },
+          { type: "text", text: userText }
+        ]
+      }]
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  const text = data.content.map(i => i.text || "").join("");
+  return parseJSON(text);
+}
+
+function buildAgentInstructions(plan, agentId) {
+  const instructions = plan.agent_instructions[agentId];
+  if (!instructions) return "";
+  
+  let block = `\n\nAUDIT PLAN — YOUR FOCUS FOR THIS SESSION:\n`;
+  block += `- Priority level: ${instructions.priority.toUpperCase()}\n`;
+  block += `- Key areas to focus on: ${instructions.focus_areas.join(", ")}\n`;
+  if (instructions.skip_notes) {
+    block += `- What to deprioritize: ${instructions.skip_notes}\n`;
+  }
+  return block;
+}
+
 const severityConfig = {
   critical: { color: "#FF4444", bg: "#FF444422", label: "CRITICAL" },
   high: { color: "#FF8C00", bg: "#FF8C0022", label: "HIGH" },
@@ -305,7 +414,8 @@ export default function UXAuditApp() {
   const [agentStatuses, setAgentStatuses] = useState({});
   const [agentResults, setAgentResults] = useState({});
   const [synthesis, setSynthesis] = useState(null);
-  const [phase, setPhase] = useState("input"); // input | running | results
+  const [auditPlan, setAuditPlan] = useState(null);
+  const [phase, setPhase] = useState("input"); // input | planning | running | results
   const [activeTab, setActiveTab] = useState("overview");
   const [expandedFindings, setExpandedFindings] = useState({});
   const [urlFetchStatus, setUrlFetchStatus] = useState(null);
@@ -318,6 +428,8 @@ export default function UXAuditApp() {
     additionalNotes: ""
   });
   const [contextExpanded, setContextExpanded] = useState(false);
+  const [planApproved, setPlanApproved] = useState(false);
+  const [planningPhaseData, setPlanningPhaseData] = useState(null);
 
   // Load API key from localStorage on mount
   useEffect(() => {
@@ -376,10 +488,12 @@ export default function UXAuditApp() {
       return;
     }
 
-    setPhase("running");
+    setPhase("planning");
     setAgentStatuses({});
     setAgentResults({});
     setSynthesis(null);
+    setAuditPlan(null);
+    setPlanApproved(false);
 
     let contextText = null;
     if (inputType !== "upload") {
@@ -387,7 +501,32 @@ export default function UXAuditApp() {
       contextText = `Analyze this UI/UX design from the following URL: ${urlInput}\n\nImagine you can see the full interface. Based on the URL and typical patterns for this type of product, provide a thorough analysis.`;
     }
 
-    // Set all agents to pending
+    // Phase 1: Planning (fallback gracefully if fails)
+    let plan = null;
+    try {
+      plan = await callClaudePlanning(apiKey, imageBase64, context);
+      setAuditPlan(plan);
+    } catch (planErr) {
+      console.error("Planning failed, continuing with default audit:", planErr);
+      setAuditPlan(null);
+    }
+
+    // Store planning phase data for use after approval
+    setPlanningPhaseData({ plan, contextText });
+    // Wait for user approval before continuing
+  };
+
+  const handleApprovePlan = async () => {
+    setPlanApproved(true);
+    const { plan, contextText } = planningPhaseData;
+
+    if (!apiKey.trim()) {
+      alert("Please enter your Anthropic API key first.");
+      return;
+    }
+
+    // Phase 2: Set up agents
+    setPhase("running");
     const initialStatuses = {};
     AGENTS.forEach(a => { initialStatuses[a.id] = "pending"; });
     setAgentStatuses(initialStatuses);
@@ -396,11 +535,19 @@ export default function UXAuditApp() {
     const runAgent = async (agent) => {
       setAgentStatuses(prev => ({ ...prev, [agent.id]: "running" }));
       try {
+        let systemPrompt = agent.persona + buildContextBlock();
+        
+        // Inject plan instructions if planning succeeded
+        if (plan) {
+          const planInstructions = buildAgentInstructions(plan, agent.id);
+          systemPrompt += planInstructions;
+        }
+        
         let result;
         if (imageBase64) {
-          result = await callClaude(apiKey, agent.persona + buildContextBlock(), imageBase64, mediaType, null);
+          result = await callClaude(apiKey, systemPrompt, imageBase64, mediaType, null);
         } else {
-          result = await callClaudeText(apiKey, agent.persona + buildContextBlock(), contextText);
+          result = await callClaudeText(apiKey, systemPrompt, contextText);
         }
         setAgentResults(prev => ({ ...prev, [agent.id]: result }));
         setAgentStatuses(prev => ({ ...prev, [agent.id]: "done" }));
@@ -426,7 +573,7 @@ export default function UXAuditApp() {
       }
     }
 
-    // Run synthesis
+    // Phase 3: Run synthesis
     setAgentStatuses(prev => ({ ...prev, synthesis: "running" }));
     try {
       const synthResult = await callClaudeText(
@@ -451,6 +598,13 @@ export default function UXAuditApp() {
     setActiveTab("overview");
   };
 
+  const handleModifyContext = () => {
+    setPhase("input");
+    setPlanApproved(false);
+    setAuditPlan(null);
+    setPlanningPhaseData(null);
+  };
+
   const reset = () => {
     setPhase("input");
     setAgentStatuses({});
@@ -463,6 +617,8 @@ export default function UXAuditApp() {
     setContext({ productType: "", targetAudience: "", userGoal: "", projectStage: "", additionalNotes: "" });
     setContextExpanded(false);
     setSelectedAgents(AGENTS.map(a => a.id));
+    setPlanApproved(false);
+    setPlanningPhaseData(null);
   };
 
   const toggleFinding = (key) => {
@@ -821,6 +977,154 @@ export default function UXAuditApp() {
           >
             {selectedAgents.length > 0 ? `RUN AUDIT WITH ${selectedAgents.length} AGENT${selectedAgents.length > 1 ? 'S' : ''} →` : 'SELECT AT LEAST ONE AGENT'}
           </button>
+        </div>
+      )}
+
+      {/* PLANNING PHASE */}
+      {phase === "planning" && (
+        <div className="fade-up" style={{ maxWidth: 680, margin: "0 auto", padding: "60px 24px" }}>
+          {!auditPlan ? (
+            <div>
+              <div style={{ marginBottom: 40 }}>
+                <div style={{ fontSize: 11, letterSpacing: "3px", color: "#888", marginBottom: 8 }}>STRATEGY</div>
+                <h2 style={{ fontFamily: "'Syne', sans-serif", fontSize: 28, fontWeight: 700 }}>Audit Planner is reviewing...</h2>
+              </div>
+              <div style={{ display: "flex", justifyContent: "center", padding: "60px 24px" }}>
+                <div style={{ fontSize: 48, animation: "spin 1.5s linear infinite" }}>◈</div>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div style={{ marginBottom: 32 }}>
+                <div style={{ fontSize: 11, letterSpacing: "3px", color: "#888", marginBottom: 8 }}>AUDIT PLAN</div>
+                <h2 style={{ fontFamily: "'Syne', sans-serif", fontSize: 28, fontWeight: 700 }}>Strategy & Focus Areas</h2>
+              </div>
+
+              {/* Screen Classification */}
+              <div style={{ background: "#111", border: "1px solid #1A1A1A", borderRadius: 4, padding: 20, marginBottom: 24 }}>
+                <div style={{ fontSize: 11, letterSpacing: "1.5px", color: "#888", marginBottom: 12, fontWeight: 600 }}>SCREEN CLASSIFICATION</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+                  {[
+                    { label: "TYPE", value: auditPlan.screen_classification.view_type },
+                    { label: "PLATFORM", value: auditPlan.screen_classification.platform },
+                    { label: "DOMAIN", value: auditPlan.screen_classification.domain },
+                    { label: "COMPLEXITY", value: auditPlan.screen_classification.complexity },
+                  ].map((item) => (
+                    <div key={item.label} style={{ padding: "8px 12px", background: "#0F0F0F", border: "1px solid #2A2A2A", borderRadius: 3, fontSize: 11 }}>
+                      <div style={{ color: "#777", fontSize: 9, marginBottom: 3, letterSpacing: "0.5px" }}>{item.label}</div>
+                      <div style={{ color: "#E8E0D0", fontWeight: 500 }}>{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Audit Strategy */}
+              <div style={{ background: "#111", border: "1px solid #1A1A1A", borderRadius: 4, padding: 20, marginBottom: 24 }}>
+                <div style={{ fontSize: 11, letterSpacing: "1.5px", color: "#888", marginBottom: 12, fontWeight: 600 }}>AUDIT STRATEGY</div>
+                <div style={{ fontSize: 13, color: "#D0C0B0", lineHeight: 1.8, marginBottom: 12 }}>
+                  {auditPlan.audit_strategy.overall_approach}
+                </div>
+                {auditPlan.audit_strategy.stage_constraints && auditPlan.audit_strategy.stage_constraints !== "Full audit — no constraints" && (
+                  <div style={{ fontSize: 11, color: "#999", borderTop: "1px solid #2A2A2A", paddingTop: 12, marginTop: 12 }}>
+                    <span style={{ color: "#B0A090", fontWeight: 500 }}>Constraints:</span> {auditPlan.audit_strategy.stage_constraints}
+                  </div>
+                )}
+              </div>
+
+              {/* Agent Priorities */}
+              <div style={{ marginBottom: 24 }}>
+                <div style={{ fontSize: 11, letterSpacing: "1.5px", color: "#888", marginBottom: 12, fontWeight: 600 }}>AGENT INSTRUCTIONS</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  {Object.entries(auditPlan.agent_instructions).map(([agentId, instr]) => {
+                    const agent = AGENTS.find((a) => a.id === agentId);
+                    if (!agent) return null;
+                    const priorityColor = instr.priority === "high" ? "#FF8C00" : instr.priority === "normal" ? "#E8E0D0" : "#666";
+                    return (
+                      <div key={agentId} style={{ background: "#111", border: `1px solid ${agent.color}33`, borderRadius: 4, padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 18 }}>{agent.icon}</span>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: "#E8E0D0" }}>{agent.name.split(' ')[0]}</div>
+                            <div style={{ fontSize: 10, color: "#888", marginTop: 2 }}>{agent.name.split(' ').slice(1).join(' ')}</div>
+                          </div>
+                          <div style={{ fontSize: 9, padding: "3px 8px", background: priorityColor + "22", color: priorityColor, borderRadius: 2, letterSpacing: "0.5px", fontWeight: 600 }}>
+                            {instr.priority.toUpperCase()}
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 10, color: "#999" }}>
+                          <div style={{ color: "#777", marginBottom: 3, fontWeight: 500 }}>Focus:</div>
+                          {instr.focus_areas.join(", ")}
+                        </div>
+                        {instr.skip_notes && (
+                          <div style={{ fontSize: 9, color: "#666", borderTop: "1px solid #2A2A2A", paddingTop: 8, marginTop: 4 }}>
+                            <span style={{ color: "#777", fontWeight: 500 }}>Skip:</span> {instr.skip_notes}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Risk Areas */}
+              {auditPlan.risk_areas.length > 0 && (
+                <div style={{ background: "#111", border: "1px solid #2A2A2A", borderRadius: 4, padding: 20 }}>
+                  <div style={{ fontSize: 11, letterSpacing: "1.5px", color: "#FF8C00", marginBottom: 12, fontWeight: 600 }}>⚠ RISK AREAS</div>
+                  {auditPlan.risk_areas.map((risk, i) => (
+                    <div key={i} style={{ fontSize: 11, marginBottom: i < auditPlan.risk_areas.length - 1 ? 12 : 0, paddingBottom: i < auditPlan.risk_areas.length - 1 ? 12 : 0, borderBottom: i < auditPlan.risk_areas.length - 1 ? "1px solid #2A2A2A" : "none" }}>
+                      <div style={{ color: "#E8E0D0", fontWeight: 600, marginBottom: 4 }}>{risk.area}</div>
+                      <div style={{ color: "#999", fontSize: 10 }}>{risk.reason}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Plan Approval Section */}
+              <div style={{ display: "flex", gap: 12, flexDirection: "column", marginTop: 32 }}>
+                <button
+                  onClick={handleApprovePlan}
+                  style={{
+                    width: "100%",
+                    padding: "16px 20px",
+                    background: "#E8E0D0",
+                    color: "#0F0F0F",
+                    border: "none",
+                    borderRadius: 4,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    letterSpacing: "1px",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                    transition: "all 0.2s"
+                  }}
+                  onMouseOver={(e) => e.target.style.transform = "translateY(-2px)"}
+                  onMouseOut={(e) => e.target.style.transform = "translateY(0)"}
+                >
+                  ✓ APPROVE PLAN & RUN AUDIT
+                </button>
+                <button
+                  onClick={handleModifyContext}
+                  style={{
+                    width: "100%",
+                    padding: "12px 20px",
+                    background: "transparent",
+                    color: "#888",
+                    border: "1px solid #333",
+                    borderRadius: 4,
+                    fontSize: 12,
+                    letterSpacing: "0.5px",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                    transition: "all 0.2s"
+                  }}
+                  onMouseOver={(e) => { e.target.style.borderColor = "#666"; e.target.style.color = "#AAA"; }}
+                  onMouseOut={(e) => { e.target.style.borderColor = "#333"; e.target.style.color = "#888"; }}
+                >
+                  ← MODIFY CONTEXT
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
