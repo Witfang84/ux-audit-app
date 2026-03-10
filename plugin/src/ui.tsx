@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { AGENTS } from "./agents";
-import type { AgentResult, SynthesisResult, AuditContext } from "./types";
+import type { AgentResult, SynthesisResult, AuditContext, AuditPlan } from "./types";
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -70,7 +70,7 @@ const S = {
   },
 };
 
-type Phase = "key" | "select" | "running" | "results";
+type Phase = "key" | "select" | "planning" | "running" | "results";
 type BuildStatus = "idle" | "building" | "done" | "error";
 
 // ─── App ──────────────────────────────────────────────────────────────────────
@@ -89,6 +89,7 @@ export default function App() {
   const [contextExpanded, setContextExpanded] = useState(false);
   const [selectedAgents, setSelectedAgents] = useState<string[]>(AGENTS.map((a) => a.id));
 
+  const [auditPlan, setAuditPlan] = useState<AuditPlan | null>(null);
   const [agentStatuses, setAgentStatuses] = useState<Record<string, string>>({});
   const [agentResults, setAgentResults] = useState<Record<string, AgentResult>>({});
   const [synthesis, setSynthesis] = useState<SynthesisResult | null>(null);
@@ -127,6 +128,14 @@ export default function App() {
         const initialStatuses: Record<string, string> = {};
         AGENTS.forEach((a) => { initialStatuses[a.id] = "pending"; });
         setAgentStatuses(initialStatuses);
+        setPhase("planning");
+      }
+      if (msg.type === "planning-result") {
+        setAuditPlan(msg.plan);
+        // Show planning for 3 seconds, then move to running
+        setTimeout(() => {
+          setPhase("running");
+        }, 3000);
       }
       if (msg.type === "agent-result") {
         setAgentResults((prev) => ({ ...prev, [msg.agentId]: msg.result }));
@@ -217,7 +226,8 @@ export default function App() {
       onChangeApiKey={changeApiKey}
     />
   );
-  if (phase === "running") return <RunningView agentStatuses={agentStatuses} />;
+  if (phase === "planning") return <PlanningView plan={auditPlan} />;
+  if (phase === "running") return <RunningView agentStatuses={agentStatuses} planActive={!!auditPlan} />;
   if (phase === "results") return (
     <ResultsView
       synthesis={synthesis} agentResults={Object.values(agentResults)}
@@ -424,17 +434,126 @@ function SelectView({ frameName, thumbUrl, context, setContext, contextExpanded,
   );
 }
 
+// ─── PlanningView ─────────────────────────────────────────────────────────────
+
+function PlanningView({ plan }: { plan: AuditPlan | null }) {
+  if (!plan) {
+    return (
+      <div style={S.app}>
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 10, letterSpacing: "2px", color: "#888", marginBottom: 4 }}>PLANNING</div>
+          <div style={{ fontSize: 16, fontWeight: "bold" }}>Audit Planner is reviewing...</div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "center", padding: "40px 20px" }}>
+          <div style={{ fontSize: 32, animation: "spin 1s linear infinite" }}>◈</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={S.app}>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 10, letterSpacing: "2px", color: "#888", marginBottom: 4 }}>AUDIT PLAN</div>
+        <div style={{ fontSize: 16, fontWeight: "bold" }}>Strategy & Focus Areas</div>
+      </div>
+
+      {/* Screen Classification */}
+      <div style={{ marginBottom: 16, padding: 14, background: "#1A1A1A", borderRadius: 6 }}>
+        <div style={{ fontSize: 10, letterSpacing: "1.5px", color: "#666", marginBottom: 10 }}>SCREEN CLASSIFICATION</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {[
+            { label: "Type", value: plan.screen_classification.view_type },
+            { label: "Platform", value: plan.screen_classification.platform },
+            { label: "Domain", value: plan.screen_classification.domain },
+            { label: "Complexity", value: plan.screen_classification.complexity },
+          ].map((item) => (
+            <div key={item.label} style={{ padding: "4px 10px", background: "#0F0F0F", border: "1px solid #2A2A2A", borderRadius: 3, fontSize: 9 }}>
+              <div style={{ color: "#666", fontSize: 8, marginBottom: 2 }}>{item.label.toUpperCase()}</div>
+              <div style={{ color: "#E8E0D0" }}>{item.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Audit Strategy */}
+      <div style={{ marginBottom: 16, padding: 14, background: "#1A1A1A", borderRadius: 6 }}>
+        <div style={{ fontSize: 10, letterSpacing: "1.5px", color: "#666", marginBottom: 8 }}>AUDIT STRATEGY</div>
+        <div style={{ fontSize: 11, color: "#C0B0A0", lineHeight: 1.6 }}>
+          {plan.audit_strategy.overall_approach}
+        </div>
+        {plan.audit_strategy.stage_constraints && plan.audit_strategy.stage_constraints !== "Full audit — no constraints" && (
+          <div style={{ fontSize: 10, color: "#888", marginTop: 8, borderTop: "1px solid #2A2A2A", paddingTop: 8 }}>
+            <strong style={{ color: "#A8A090" }}>Constraints:</strong> {plan.audit_strategy.stage_constraints}
+          </div>
+        )}
+      </div>
+
+      {/* Agent Priorities */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 10, letterSpacing: "1.5px", color: "#666", marginBottom: 8 }}>AGENT PRIORITIES</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {Object.entries(plan.agent_instructions).map(([agentId, instr]) => {
+            const agent = AGENTS.find((a) => a.id === agentId);
+            if (!agent) return null;
+            const priorityColor = instr.priority === "high" ? "#FF8C00" : instr.priority === "normal" ? "#E8E0D0" : "#666";
+            return (
+              <div key={agentId} style={{ padding: 10, background: "#1A1A1A", borderRadius: 6, borderLeft: `2px solid ${agent.color}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                  <span style={{ fontSize: 14 }}>{agent.icon}</span>
+                  <span style={{ fontSize: 11, fontWeight: "bold" }}>{agent.name}</span>
+                  <span style={{ fontSize: 8, padding: "2px 6px", background: priorityColor + "22", color: priorityColor, borderRadius: 2, letterSpacing: "0.5px" }}>
+                    {instr.priority.toUpperCase()}
+                  </span>
+                </div>
+                <div style={{ fontSize: 9, color: "#999", marginBottom: 4 }}>
+                  Focus: {instr.focus_areas.join(", ")}
+                </div>
+                {instr.skip_notes && (
+                  <div style={{ fontSize: 9, color: "#666", borderTop: "1px solid #2A2A2A", paddingTop: 4, marginTop: 4 }}>
+                    Skip: {instr.skip_notes}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Risk Areas */}
+      {plan.risk_areas.length > 0 && (
+        <div style={{ marginBottom: 16, padding: 14, background: "#1A1A1A", borderRadius: 6 }}>
+          <div style={{ fontSize: 10, letterSpacing: "1.5px", color: "#FF8C00", marginBottom: 8 }}>RISK AREAS</div>
+          {plan.risk_areas.map((risk, i) => (
+            <div key={i} style={{ fontSize: 10, marginBottom: i < plan.risk_areas.length - 1 ? 8 : 0, paddingBottom: i < plan.risk_areas.length - 1 ? 8 : 0, borderBottom: i < plan.risk_areas.length - 1 ? "1px solid #2A2A2A" : "none" }}>
+              <div style={{ color: "#E8E0D0", fontWeight: "bold", marginBottom: 2 }}>{risk.area}</div>
+              <div style={{ color: "#999", fontSize: 9 }}>{risk.reason}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── RunningView ──────────────────────────────────────────────────────────────
 
-function RunningView({ agentStatuses }: { agentStatuses: Record<string, string> }) {
+function RunningView({ agentStatuses, planActive }: { agentStatuses: Record<string, string>; planActive: boolean }) {
   const icon = (s: string) => s === "done" ? "✓" : s === "error" ? "✗" : s === "running" ? "…" : "·";
   const color = (s: string) => s === "done" ? "#44AA88" : s === "error" ? "#FF4444" : s === "running" ? "#E8E0D0" : "#444";
 
   return (
     <div style={S.app}>
-      <div style={{ marginBottom: 24 }}>
-        <div style={{ fontSize: 10, letterSpacing: "2px", color: "#888", marginBottom: 4 }}>ANALYZING</div>
-        <div style={{ fontSize: 16, fontWeight: "bold" }}>Running agents...</div>
+      <div style={{ marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontSize: 10, letterSpacing: "2px", color: "#888", marginBottom: 4 }}>ANALYZING</div>
+          <div style={{ fontSize: 16, fontWeight: "bold" }}>Running agents...</div>
+        </div>
+        {planActive && (
+          <div style={{ fontSize: 10, letterSpacing: "2px", color: "#44AA88", background: "#1A3A32", padding: "4px 10px", borderRadius: 4, fontWeight: "bold" }}>
+            PLAN ACTIVE
+          </div>
+        )}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {AGENTS.map((a) => {

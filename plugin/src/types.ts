@@ -95,6 +95,7 @@ export type PluginMessage =
   | { type: "api-key"; apiKey: string }
   | { type: "run-audit"; apiKey: string; agentIds: string[]; imageBase64: string; context: AuditContext }
   | { type: "audit-started" }
+  | { type: "planning-result"; plan: AuditPlan | null }
   | { type: "agent-result"; agentId: string; result: AgentResult }
   | { type: "synthesis-result"; result: SynthesisResult }
   | { type: "audit-error"; message: string };
