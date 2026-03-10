@@ -52,6 +52,37 @@ export interface AuditContext {
   additionalNotes: string;
 }
 
+export interface AgentPlanInstructions {
+  priority: "high" | "normal" | "low";
+  focus_areas: string[];
+  skip_notes?: string;
+}
+
+export interface AuditPlan {
+  screen_classification: {
+    view_type: string;
+    platform: string;
+    domain: string;
+    complexity: "low" | "medium" | "high";
+  };
+  audit_strategy: {
+    overall_approach: string;
+    stage_constraints: string;
+    critical_path: string;
+  };
+  agent_instructions: {
+    heuristics: AgentPlanInstructions;
+    darkpatterns: AgentPlanInstructions;
+    accessibility: AgentPlanInstructions;
+    designflaws: AgentPlanInstructions;
+  };
+  risk_areas: {
+    area: string;
+    reason: string;
+    primary_agent: string;
+  }[];
+}
+
 // Messages between code.ts and ui.tsx via postMessage
 export type PluginMessage =
   | { type: "export-ready"; imageData: Uint8Array; frameName: string; frameWidth: number; frameHeight: number }

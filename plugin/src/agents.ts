@@ -1,4 +1,4 @@
-import type { AuditContext, AgentResult } from "./types";
+import type { AuditContext, AgentResult, AgentPlanInstructions } from "./types";
 
 export interface Agent {
   id: string;
@@ -153,15 +153,93 @@ Return max 5 most important findings. Return ONLY valid JSON, no text before or 
   },
 ];
 
-export function buildContextBlock(context: AuditContext): string {
+export const PLANNING_PROMPT = `You are Audit Planner, a senior UX strategist. Before specialist agents analyze this design, you review the screen and context to create a focused, adaptive audit plan.
+
+The 4 specialist agents you are directing:
+- heuristics: Nielsen's 10 Heuristics, Shneiderman's 8 Golden Rules, Gestalt Principles, behavioral frameworks (Fogg, Hook Model), UX writing
+- darkpatterns: Manipulative patterns (fake urgency, confirmshaming, hidden costs, forced continuity, fake social proof, etc.), ethical design
+- accessibility: WCAG 2.1 AA/AAA — contrast ratios, touch targets, focus states, cognitive load, screen reader compatibility
+- designflaws: Information architecture, visual hierarchy, component consistency, interaction states, cognitive load, UX/UI layers
+
+Your task:
+1. Classify the screen based on what you see (view type, platform, domain, complexity)
+2. Define the audit strategy adapted to the project stage — lo-fi/mid-fi should deprioritize visual polish; hi-fi/prototype/live warrants full scrutiny
+3. Assign each agent a priority and focus areas based on what is most at risk for this specific screen and audience
+
+Adapt priorities by context:
+- Checkout/payment screens → darkpatterns HIGH, accessibility HIGH
+- Onboarding flows → heuristics HIGH (friction, cognitive load), designflaws HIGH (IA, progressive disclosure)
+- Dashboards → designflaws HIGH (hierarchy, information density), heuristics NORMAL
+- Forms → accessibility HIGH (labels, errors), heuristics HIGH (error recovery)
+- Lo-fi/Mid-fi stage → designflaws and heuristics HIGH; accessibility and darkpatterns NORMAL (visual details not final yet)
+- Elderly or vulnerable audiences → accessibility HIGH, darkpatterns HIGH
+- B2B/developer tools → heuristics HIGH (efficiency, consistency), designflaws HIGH (IA)
+
+Return ONLY valid JSON, no text before or after:
+{
+  "screen_classification": {
+    "view_type": "<checkout|onboarding|dashboard|form|landing page|settings|list/feed|modal|other>",
+    "platform": "<mobile|web desktop|responsive|tablet>",
+    "domain": "<e-commerce|SaaS B2B|fintech|healthcare|consumer app|other>",
+    "complexity": "<low|medium|high>"
+  },
+  "audit_strategy": {
+    "overall_approach": "<2-3 sentences: what this audit should focus on and why>",
+    "stage_constraints": "<what to deprioritize given the project stage, or 'Full audit — no constraints' if hi-fi/live>",
+    "critical_path": "<the primary action the user must complete on this screen>"
+  },
+  "agent_instructions": {
+    "heuristics": {
+      "priority": "<high|normal|low>",
+      "focus_areas": ["<area 1>", "<area 2>", "<area 3>"],
+      "skip_notes": "<optional: what is not relevant at this stage>"
+    },
+    "darkpatterns": {
+      "priority": "<high|normal|low>",
+      "focus_areas": ["<area 1>", "<area 2>", "<area 3>"],
+      "skip_notes": "<optional>"
+    },
+    "accessibility": {
+      "priority": "<high|normal|low>",
+      "focus_areas": ["<area 1>", "<area 2>", "<area 3>"],
+      "skip_notes": "<optional>"
+    },
+    "designflaws": {
+      "priority": "<high|normal|low>",
+      "focus_areas": ["<area 1>", "<area 2>", "<area 3>"],
+      "skip_notes": "<optional>"
+    }
+  },
+  "risk_areas": [
+    {
+      "area": "<risk area name>",
+      "reason": "<why this is a risk for this screen>",
+      "primary_agent": "<agent id>"
+    }
+  ]
+}`;
+
+export function buildContextBlock(context: AuditContext, planInstructions?: AgentPlanInstructions): string {
   const lines: string[] = [];
   if (context.productType) lines.push(`- Product type: ${context.productType}`);
   if (context.targetAudience) lines.push(`- Target audience: ${context.targetAudience}`);
   if (context.userGoal) lines.push(`- User's goal on this screen: ${context.userGoal}`);
   if (context.projectStage) lines.push(`- Project stage: ${context.projectStage}`);
   if (context.additionalNotes) lines.push(`- Additional context: ${context.additionalNotes}`);
-  if (!lines.length) return "";
-  return `\n\nDESIGN CONTEXT (take this into account during your analysis):\n${lines.join("\n")}\n`;
+
+  let block = "";
+  if (lines.length) {
+    block += `\n\nDESIGN CONTEXT (take this into account during your analysis):\n${lines.join("\n")}\n`;
+  }
+  if (planInstructions) {
+    block += `\n\nAUDIT PLAN — YOUR FOCUS FOR THIS SESSION:\n`;
+    block += `- Priority level: ${planInstructions.priority.toUpperCase()}\n`;
+    block += `- Key areas to focus on: ${planInstructions.focus_areas.join(", ")}\n`;
+    if (planInstructions.skip_notes) {
+      block += `- What to deprioritize: ${planInstructions.skip_notes}\n`;
+    }
+  }
+  return block;
 }
 
 export const SYNTHESIS_PROMPT = (results: AgentResult[]): string =>
